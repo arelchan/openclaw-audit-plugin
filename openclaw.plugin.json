@@ -1,0 +1,12 @@
+{
+  "id": "audit-plugin",
+  "name": "Audit Plugin",
+  "description": "Structured audit logging for LLM input/output, tools, sessions, and subagents.",
+  "version": "0.2.11",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
+

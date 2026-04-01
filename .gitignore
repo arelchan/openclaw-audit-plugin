@@ -1,0 +1,14 @@
+# Runtime output
+logs/
+audit-artifacts/
+*.log
+
+# Local backups
+*.backup.*
+
+# macOS
+.DS_Store
+
+# Local env
+.env
+.env.*

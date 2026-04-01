@@ -1,0 +1,31 @@
+{
+  "name": "openclaw-audit-plugin",
+  "version": "0.2.11",
+  "description": "Structured audit logging and local trace visualization for OpenClaw.",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "trace:ui": "node server.js",
+    "trace:view": "node trace-viewer.js",
+    "check": "node --check index.js && node --check server.js && node --check trace-viewer.js && node --check ui/app.js"
+  },
+  "files": [
+    "index.js",
+    "server.js",
+    "trace-viewer.js",
+    "ui",
+    "openclaw.plugin.json",
+    "README.md",
+    "PUBLISHING.md"
+  ],
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "audit",
+    "tracing",
+    "dashboard"
+  ]
+}

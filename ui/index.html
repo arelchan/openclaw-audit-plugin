@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OpenClaw Trace Console</title>
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="pane pane-sessions">
+        <div class="pane-head">
+          <div>
+            <p class="eyebrow">OpenClaw Runtime</p>
+            <h1>Sessions</h1>
+          </div>
+          <button class="ghost-button" id="refreshButton" type="button">刷新</button>
+        </div>
+        <div class="controls">
+          <label class="field">
+            <span>Agent</span>
+            <select id="agentFilter"></select>
+          </label>
+          <label class="field field-search">
+            <span>搜索</span>
+            <input id="searchInput" type="search" placeholder="session / trace / agent">
+          </label>
+        </div>
+        <div class="session-list" id="sessionList"></div>
+      </aside>
+
+      <main class="pane pane-traces">
+        <div class="pane-head">
+          <div>
+            <p class="eyebrow">Execution Flow</p>
+            <h2 id="traceTitle">选择一个会话</h2>
+          </div>
+          <div class="head-meta" id="traceMeta"></div>
+        </div>
+        <div class="trace-list" id="traceList"></div>
+      </main>
+
+      <section class="pane pane-details">
+        <div class="pane-head">
+          <div>
+            <p class="eyebrow">Inspector</p>
+            <h2 id="detailsTitle">选择一个 Span</h2>
+          </div>
+          <div class="tabs">
+            <button class="tab is-active" data-tab="content" type="button">输入输出</button>
+            <button class="tab" data-tab="metadata" type="button">元数据</button>
+            <button class="tab" data-tab="raw" type="button">Raw JSON</button>
+          </div>
+        </div>
+        <div class="details-body" id="detailsBody"></div>
+      </section>
+    </div>
+
+    <template id="emptyStateTemplate">
+      <div class="empty-state">
+        <p class="empty-title">还没有可展示的数据</p>
+        <p class="empty-copy">刷新一下，或者在 OpenClaw 里再发一条消息。</p>
+      </div>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>
