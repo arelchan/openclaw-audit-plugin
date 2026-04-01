@@ -12,6 +12,28 @@ This plugin turns OpenClaw runtime activity into a trace-oriented debugging surf
 
 It writes JSONL span/event logs plus large artifacts to the local OpenClaw state directory, then serves a dashboard for exploring trace trees and node-level details.
 
+## Privacy And Data Handling
+
+This plugin is designed for local inspection.
+
+It can record:
+
+- model inputs
+- model outputs
+- tool inputs and outputs
+- skill content reads
+- session and subagent activity
+
+That means the generated logs and artifacts may contain sensitive user data.
+
+Treat these paths as private runtime output:
+
+- `logs/audit-events.log`
+- `logs/audit-spans.log`
+- `logs/audit-artifacts/`
+
+Do not commit them to a repository or share them without review and redaction.
+
 ## Why This Exists
 
 OpenClaw exposes a lot of useful runtime signals, but they are spread across hooks, logs, and session state.
