@@ -1,5 +1,6 @@
 const state = {
   data: null,
+  viewMode: 'sessions',
   selectedSessionId: null,
   selectedTraceKey: null,
   selectedSpanId: null,
@@ -15,16 +16,19 @@ const state = {
 const AUTO_REFRESH_MS = 5000;
 
 const elements = {
+  listTitle: document.getElementById('listTitle'),
   sessionList: document.getElementById('sessionList'),
   traceList: document.getElementById('traceList'),
   detailsBody: document.getElementById('detailsBody'),
+  flowEyebrow: document.getElementById('flowEyebrow'),
   traceTitle: document.getElementById('traceTitle'),
   traceMeta: document.getElementById('traceMeta'),
   detailsTitle: document.getElementById('detailsTitle'),
   searchInput: document.getElementById('searchInput'),
   agentFilter: document.getElementById('agentFilter'),
   refreshButton: document.getElementById('refreshButton'),
-  tabs: [...document.querySelectorAll('.tab')],
+  tabs: [...document.querySelectorAll('.tab[data-tab]')],
+  viewModeButtons: [...document.querySelectorAll('.tab[data-view-mode]')],
   emptyStateTemplate: document.getElementById('emptyStateTemplate')
 };
 
@@ -134,6 +138,102 @@ function filteredSessions() {
   });
 }
 
+function allApiCalls() {
+  return allSessions()
+    .flatMap((session) =>
+      (session.traces || []).flatMap((trace) =>
+        (trace.spans || [])
+          .filter((span) => span.name === 'llm.call')
+          .map((span) => ({
+            sessionId: session.sessionId,
+            sessionKey: session.sessionKey,
+            sessionAgentId: session.agentId,
+            traceKey: trace.traceKey,
+            traceId: trace.traceId,
+            traceStartTime: trace.startTime,
+            traceEndTime: trace.endTime,
+            span
+          }))
+      )
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.span.startTime || b.traceStartTime || 0).getTime() -
+        new Date(a.span.startTime || a.traceStartTime || 0).getTime()
+    );
+}
+
+function filteredApiCalls() {
+  const query = state.search.trim().toLowerCase();
+  return allApiCalls().filter((entry) => {
+    const span = entry.span;
+    if (state.agent !== 'all' && entry.sessionAgentId !== state.agent) return false;
+    if (!query) return true;
+    const haystack = [
+      entry.sessionAgentId,
+      entry.sessionId,
+      entry.sessionKey,
+      entry.traceId,
+      span.spanId,
+      span.displayTitle,
+      span.attributes?.['llm.provider'],
+      span.attributes?.['llm.model'],
+      span.attributes?.['llm.input_preview'],
+      span.attributes?.['llm.output_preview']
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function aggregateApiOverview(calls) {
+  const summary = {
+    totalCalls: calls.length,
+    failedCalls: 0,
+    usageReportedCalls: 0,
+    usageUnreportedCalls: 0,
+    input: 0,
+    output: 0,
+    total: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    costTotal: 0,
+    durationTotal: 0,
+    providerModelCounts: new Map()
+  };
+
+  for (const entry of calls) {
+    const span = entry.span;
+    if (span.isFailed) summary.failedCalls += 1;
+    summary.durationTotal += span.durationMs || 0;
+    const usage = usageFromSpan(span);
+    if (usageReported(usage)) {
+      summary.usageReportedCalls += 1;
+      if (usage.input != null) summary.input += usage.input;
+      if (usage.output != null) summary.output += usage.output;
+      if (usage.total != null) summary.total += usage.total;
+      if (usage.cacheRead != null) summary.cacheRead += usage.cacheRead;
+      if (usage.cacheWrite != null) summary.cacheWrite += usage.cacheWrite;
+      if (usage.costTotal != null) summary.costTotal += usage.costTotal;
+    } else {
+      summary.usageUnreportedCalls += 1;
+    }
+    const providerModel = [span.attributes?.['llm.provider'], span.attributes?.['llm.model']]
+      .filter(Boolean)
+      .join(' / ');
+    if (providerModel) {
+      summary.providerModelCounts.set(providerModel, (summary.providerModelCounts.get(providerModel) || 0) + 1);
+    }
+  }
+
+  summary.avgDurationMs = summary.totalCalls ? Math.round(summary.durationTotal / summary.totalCalls) : 0;
+  summary.topModel =
+    [...summary.providerModelCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  return summary;
+}
+
 function currentSession() {
   return allSessions().find((session) => session.sessionId === state.selectedSessionId) || null;
 }
@@ -149,6 +249,17 @@ function currentTrace() {
   if (!session) return null;
   const traces = sortedTraces(session);
   return traces.find((trace) => trace.traceKey === state.selectedTraceKey) || traces[0] || null;
+}
+
+function currentApiCall() {
+  return (
+    filteredApiCalls().find(
+      (entry) =>
+        entry.sessionId === state.selectedSessionId &&
+        entry.traceKey === state.selectedTraceKey &&
+        entry.span.spanId === state.selectedSpanId
+    ) || null
+  );
 }
 
 function findSessionByIdentity(sessionId, sessionKey) {
@@ -897,7 +1008,10 @@ async function loadArtifacts(span) {
 }
 
 function renderAgentFilter() {
-  const agents = ['all', ...new Set(allSessions().map((session) => session.agentId).filter(Boolean))];
+  const source = state.viewMode === 'api'
+    ? allApiCalls().map((entry) => entry.sessionAgentId)
+    : allSessions().map((session) => session.agentId);
+  const agents = ['all', ...new Set(source.filter(Boolean))];
   elements.agentFilter.innerHTML = agents
     .map((agent) => `<option value="${agent}">${agent === 'all' ? '全部 agent' : agent}</option>`)
     .join('');
@@ -905,6 +1019,29 @@ function renderAgentFilter() {
 }
 
 function syncSelection() {
+  if (state.viewMode === 'api') {
+    const calls = filteredApiCalls();
+    if (!calls.length) {
+      state.selectedSessionId = null;
+      state.selectedTraceKey = null;
+      state.selectedSpanId = null;
+      return;
+    }
+
+    const active =
+      calls.find(
+        (entry) =>
+          entry.sessionId === state.selectedSessionId &&
+          entry.traceKey === state.selectedTraceKey &&
+          entry.span.spanId === state.selectedSpanId
+      ) || calls[0];
+
+    state.selectedSessionId = active.sessionId;
+    state.selectedTraceKey = active.traceKey;
+    state.selectedSpanId = active.span.spanId;
+    return;
+  }
+
   const sessions = filteredSessions();
   if (!sessions.length) {
     state.selectedSessionId = null;
@@ -923,6 +1060,10 @@ function syncSelection() {
 }
 
 function renderSessionList() {
+  if (state.viewMode === 'api') {
+    renderApiCallList();
+    return;
+  }
   const sessions = filteredSessions();
   elements.sessionList.innerHTML = '';
   if (!sessions.length) {
@@ -962,7 +1103,57 @@ function renderSessionList() {
   }
 }
 
+function renderApiCallList() {
+  const calls = filteredApiCalls();
+  elements.sessionList.innerHTML = '';
+  if (!calls.length) {
+    elements.sessionList.appendChild(cloneEmptyState());
+    return;
+  }
+
+  for (const entry of calls) {
+    const span = entry.span;
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = `session-card${span.spanId === state.selectedSpanId ? ' is-active' : ''}`;
+    card.title = `${span.spanId}\n${entry.traceId}`.trim();
+    const modelInfo = [span.attributes?.['llm.provider'], span.attributes?.['llm.model']].filter(Boolean).join(' / ');
+    const usageChips = llmUsageSummary(span);
+
+    card.innerHTML = `
+      <div class="session-card-head">
+        <span class="session-pill">model call</span>
+        <span class="session-badge">${formatDuration(span.durationMs)}</span>
+      </div>
+      <div class="session-title-row">
+        <div class="session-id">${escapeHtml(shortId(span.spanId, 18))}</div>
+        <div class="session-channel">${escapeHtml(entry.sessionAgentId || 'agent')}</div>
+      </div>
+      <div class="session-meta">
+        <div>${formatTime(span.startTime)}</div>
+        <div>${escapeHtml(shortId(entry.traceId, 14))}</div>
+      </div>
+      <div class="trace-summary">
+        ${modelInfo ? `<span class="summary-chip">${escapeHtml(modelInfo)}</span>` : ''}
+        ${usageChips.map((chip) => `<span class="summary-chip${chip === 'usage 未统计' ? ' summary-chip-soft' : ''}">${escapeHtml(chip)}</span>`).join('')}
+      </div>
+      ${span.isFailed ? '<div class="session-chain">error</div>' : ''}
+    `;
+    card.addEventListener('click', () => {
+      state.selectedSessionId = entry.sessionId;
+      state.selectedTraceKey = entry.traceKey;
+      state.selectedSpanId = span.spanId;
+      render();
+    });
+    elements.sessionList.appendChild(card);
+  }
+}
+
 function renderTraceList() {
+  if (state.viewMode === 'api') {
+    renderApiTraceContext();
+    return;
+  }
   const session = currentSession();
   elements.traceList.innerHTML = '';
   if (!session) {
@@ -1047,6 +1238,118 @@ function renderTraceList() {
     }
     elements.traceList.appendChild(group);
   });
+}
+
+function renderApiOverview(summary) {
+  return `
+    <section class="api-overview">
+      <article class="overview-row">
+        <div class="overview-title"><strong>calls</strong></div>
+        <div class="overview-tags">
+          <span class="summary-chip">${summary.totalCalls} total</span>
+          <span class="summary-chip${summary.failedCalls ? ' summary-chip-error' : ''}">${summary.failedCalls} failed</span>
+          <span class="summary-chip">${formatDuration(summary.avgDurationMs)}</span>
+        </div>
+      </article>
+      <article class="overview-row">
+        <div class="overview-title"><strong>tokens</strong></div>
+        <div class="overview-tags">
+          <span class="summary-chip">${summary.input} input</span>
+          <span class="summary-chip">${summary.output} output</span>
+          <span class="summary-chip">${summary.total} total</span>
+        </div>
+      </article>
+      <article class="overview-row">
+        <div class="overview-title"><strong>cache & cost</strong></div>
+        <div class="overview-tags">
+          <span class="summary-chip">${summary.cacheRead} cache hit</span>
+          ${
+            summary.cacheWrite
+              ? `<span class="summary-chip">${summary.cacheWrite} cache write</span>`
+              : ''
+          }
+          ${
+            summary.costTotal
+              ? `<span class="summary-chip">cost ${escapeHtml(String(summary.costTotal))}</span>`
+              : ''
+          }
+        </div>
+      </article>
+      <article class="overview-row">
+        <div class="overview-title"><strong>coverage</strong></div>
+        <div class="overview-tags">
+          <span class="summary-chip">${summary.usageReportedCalls} usage reported</span>
+          <span class="summary-chip${summary.usageUnreportedCalls ? ' summary-chip-soft' : ''}">${summary.usageUnreportedCalls} 未统计</span>
+          ${
+            summary.topModel
+              ? `<span class="summary-chip">${escapeHtml(summary.topModel)}</span>`
+              : ''
+          }
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function renderApiTraceContext() {
+  const entry = currentApiCall();
+  elements.traceList.innerHTML = '';
+  if (!entry) {
+    elements.traceTitle.textContent = '选择一个 API 调用';
+    elements.traceMeta.textContent = '';
+    elements.traceList.appendChild(cloneEmptyState());
+    return;
+  }
+
+  const session = currentSession();
+  const trace = currentTrace();
+  const overview = aggregateApiOverview(filteredApiCalls());
+  const summary = traceSummary(trace);
+  const visibleTree = visibleTraceTree(trace.tree || []);
+  elements.traceTitle.textContent = `${[entry.span.attributes?.['llm.provider'], entry.span.attributes?.['llm.model']].filter(Boolean).join(' / ') || 'model call'}`;
+  elements.traceMeta.innerHTML = `
+    <div>${escapeHtml(session?.agentId || '-')}</div>
+    <div>${escapeHtml(shortId(trace?.traceId || '-', 14))}</div>
+    <div>${formatTime(entry.span.startTime)}</div>
+  `;
+
+  elements.traceList.innerHTML = renderApiOverview(overview);
+  const group = document.createElement('section');
+  group.className = 'trace-group is-active';
+  group.title = trace?.traceKey || trace?.traceId || '';
+  group.innerHTML = `
+    <div class="trace-header">
+      <div class="trace-title">
+        <div class="trace-topline">
+          <span class="trace-pill">trace context</span>
+          <span class="span-chip trace-mini-id">${escapeHtml(shortId(trace?.traceId || '-', 10))}</span>
+          <span class="trace-status">${formatDuration(trace?.durationMs)}</span>
+        </div>
+        <div class="trace-meta">
+          <div>${formatTime(trace?.startTime)} -> ${formatTime(trace?.endTime)}</div>
+          <div>${trace?.spanCount || 0} spans</div>
+        </div>
+      </div>
+    </div>
+    <div class="trace-summary">
+      <span class="summary-chip">${summary.modelCalls} model</span>
+      <span class="summary-chip">${summary.toolCalls} tool</span>
+      <span class="summary-chip">${summary.subagents} subagent</span>
+      <span class="summary-chip">${summary.readSkills.length} skill.read</span>
+    </div>
+    <div class="trace-tree"></div>
+  `;
+
+  const treeHost = group.querySelector('.trace-tree');
+  if (!visibleTree.length) {
+    const empty = document.createElement('div');
+    empty.className = 'trace-tree-note';
+    empty.textContent = '这个 trace 当前没有可展示的主要执行节点。';
+    treeHost.appendChild(empty);
+  } else {
+    visibleTree.forEach((node) => renderSpanNode(node, treeHost));
+  }
+  elements.traceList.appendChild(group);
 }
 
 function renderSpanNode(node, host) {
@@ -1494,11 +1797,18 @@ async function renderDetails() {
 function render() {
   syncSelection();
   renderAgentFilter();
+  elements.listTitle.textContent = state.viewMode === 'api' ? 'API Calls' : 'Sessions';
+  elements.flowEyebrow.textContent = state.viewMode === 'api' ? 'API Overview' : 'Execution Flow';
+  elements.searchInput.placeholder =
+    state.viewMode === 'api' ? 'span / trace / model / tool' : 'session / trace / agent';
   renderSessionList();
   renderTraceList();
   renderDetails();
   elements.tabs.forEach((tab) => {
     tab.classList.toggle('is-active', tab.dataset.tab === state.selectedTab);
+  });
+  elements.viewModeButtons.forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.viewMode === state.viewMode);
   });
 }
 
@@ -1554,6 +1864,13 @@ elements.agentFilter.addEventListener('change', (event) => {
 elements.refreshButton.addEventListener('click', () => {
   state.artifactCache.clear();
   loadData();
+});
+
+elements.viewModeButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    state.viewMode = button.dataset.viewMode;
+    render();
+  });
 });
 
 elements.tabs.forEach((tab) => {

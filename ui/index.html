@@ -12,9 +12,13 @@
         <div class="pane-head">
           <div>
             <p class="eyebrow">OpenClaw Runtime</p>
-            <h1>Sessions</h1>
+            <h1 id="listTitle">Sessions</h1>
           </div>
           <button class="ghost-button" id="refreshButton" type="button">刷新</button>
+        </div>
+        <div class="mode-switch">
+          <button class="tab is-active" data-view-mode="sessions" type="button">会话追踪</button>
+          <button class="tab" data-view-mode="api" type="button">API 调用</button>
         </div>
         <div class="controls">
           <label class="field">
@@ -32,7 +36,7 @@
       <main class="pane pane-traces">
         <div class="pane-head">
           <div>
-            <p class="eyebrow">Execution Flow</p>
+            <p class="eyebrow" id="flowEyebrow">Execution Flow</p>
             <h2 id="traceTitle">选择一个会话</h2>
           </div>
           <div class="head-meta" id="traceMeta"></div>
