@@ -1,5 +1,7 @@
 # OpenClaw Audit Plugin
 
+[中文说明](./README.zh-CN.md)
+
 Structured audit logging and local trace visualization for OpenClaw.
 
 This plugin turns OpenClaw runtime activity into a trace-oriented debugging surface:
