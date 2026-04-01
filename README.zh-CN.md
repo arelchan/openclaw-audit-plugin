@@ -16,6 +16,13 @@
 
 ![OpenClaw Audit Plugin dashboard](./.github/assets/trace-console.png)
 
+## 亮点
+
+- 面向 `session.turn`、`llm.call`、`tool.call`、`skill.read`、`subagent.call` 的实用 trace 树
+- 优先看结构化 Inspector，而不是先看 raw JSON
+- 明确区分日志与 artifact 的本地优先存储方式
+- 同一套包里同时提供 dashboard 和终端 viewer
+
 ## 一眼看懂
 
 ```mermaid
@@ -42,6 +49,16 @@ npm run trace:ui
 5. 打开：
 
 - `http://127.0.0.1:4318`
+
+## 配置项
+
+运行时配置保持得比较少：
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `OPENCLAW_STATE_DIR` | `~/.openclaw` | 日志与 artifact 的基础目录 |
+| `TRACE_UI_PORT` | `4318` | Dashboard 端口 |
+| `TRACE_UI_HOST` | `127.0.0.1` | Dashboard 绑定地址 |
 
 ## 隐私与数据处理
 
@@ -151,14 +168,13 @@ Inspector 当前重点优化了这些节点的可读性：
 npm run trace:ui
 ```
 
-可选环境变量：
+常见覆盖方式：
 
-- `TRACE_UI_PORT`：dashboard 端口，默认 `4318`
-- `OPENCLAW_STATE_DIR`：覆盖 OpenClaw 状态目录
+```bash
+TRACE_UI_HOST=127.0.0.1 TRACE_UI_PORT=4318 npm run trace:ui
+```
 
-然后打开：
-
-- `http://127.0.0.1:4318`
+然后打开你配置的 host 和 port。
 
 也可以直接运行：
 

@@ -7,6 +7,7 @@ const os = require('os');
 const { URL } = require('url');
 
 const PORT = Number(process.env.TRACE_UI_PORT || 4318);
+const HOST = process.env.TRACE_UI_HOST || '127.0.0.1';
 const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
 const LOGS_DIR = path.join(STATE_DIR, 'logs');
 const SPANS_PATH = path.join(LOGS_DIR, 'audit-spans.log');
@@ -749,7 +750,7 @@ function serveStatic(reqPath, res) {
 }
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+  const url = new URL(req.url, `http://${req.headers.host || HOST}`);
 
   if (url.pathname === '/api/health') {
     sendJson(res, 200, { ok: true, port: PORT, stateDir: STATE_DIR });
@@ -775,6 +776,6 @@ const server = http.createServer((req, res) => {
   serveStatic(url.pathname, res);
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Trace UI running at http://127.0.0.1:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Trace UI running at http://${HOST}:${PORT}`);
 });

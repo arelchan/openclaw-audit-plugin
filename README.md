@@ -16,6 +16,13 @@ It writes JSONL span/event logs plus large artifacts to the local OpenClaw state
 
 ![OpenClaw Audit Plugin dashboard](./.github/assets/trace-console.png)
 
+## Highlights
+
+- practical trace tree for `session.turn`, `llm.call`, `tool.call`, `skill.read`, and `subagent.call`
+- structured inspector views instead of raw JSON first
+- local-first logging model with explicit artifact storage
+- dashboard and terminal viewer included in the same package
+
 ## At A Glance
 
 ```mermaid
@@ -42,6 +49,16 @@ npm run trace:ui
 5. Open:
 
 - `http://127.0.0.1:4318`
+
+## Configuration
+
+Runtime settings are intentionally small:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENCLAW_STATE_DIR` | `~/.openclaw` | Base directory for logs and artifacts |
+| `TRACE_UI_PORT` | `4318` | Dashboard port |
+| `TRACE_UI_HOST` | `127.0.0.1` | Dashboard bind host |
 
 ## Privacy And Data Handling
 
@@ -151,14 +168,13 @@ The base directory is:
 npm run trace:ui
 ```
 
-Optional environment variables:
+Common overrides:
 
-- `TRACE_UI_PORT`: dashboard port, defaults to `4318`
-- `OPENCLAW_STATE_DIR`: override the OpenClaw state directory
+```bash
+TRACE_UI_HOST=127.0.0.1 TRACE_UI_PORT=4318 npm run trace:ui
+```
 
-Then open:
-
-- `http://127.0.0.1:4318`
+Then open the host and port you configured.
 
 Or run directly:
 
