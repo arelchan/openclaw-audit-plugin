@@ -12,6 +12,21 @@ This plugin turns OpenClaw runtime activity into a trace-oriented debugging surf
 
 It writes JSONL span/event logs plus large artifacts to the local OpenClaw state directory, then serves a dashboard for exploring trace trees and node-level details.
 
+## Quick Start
+
+1. Copy this plugin into an OpenClaw plugin directory
+2. Load it through OpenClaw
+3. Trigger a few real sessions
+4. Run the local dashboard:
+
+```bash
+npm run trace:ui
+```
+
+5. Open:
+
+- `http://127.0.0.1:4318`
+
 ## Privacy And Data Handling
 
 This plugin is designed for local inspection.
@@ -71,6 +86,18 @@ Typical shape:
 ```
 
 The plugin expects OpenClaw to call `index.js` through the standard plugin mechanism.
+
+## Trace Model
+
+The dashboard uses a practical trace model:
+
+- `session.turn`: turn-level root node
+- `llm.call`: model invocation with structured input and output
+- `tool.call`: tool invocation with input/output artifacts
+- `skill.read`: derived child node under a skill file read
+- `subagent.call`: derived child node under `sessions_spawn`
+
+This keeps the tree close to the runtime while still surfacing useful derived behavior.
 
 ## What It Writes
 
@@ -163,6 +190,22 @@ Keep local deployment glue outside the published package:
 - user-specific `LaunchAgents`
 - private config
 - logs and artifacts
+
+## Development
+
+Useful local commands:
+
+```bash
+npm run check
+npm run trace:ui
+npm run trace:view -- latest
+```
+
+See also:
+
+- [PUBLISHING.md](./PUBLISHING.md)
+- [SECURITY.md](./SECURITY.md)
+- [CONTRIBUTING.md](./CONTRIBUTING.md)
 
 ## License
 

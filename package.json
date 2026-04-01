@@ -4,6 +4,14 @@
   "description": "Structured audit logging and local trace visualization for OpenClaw.",
   "main": "index.js",
   "type": "commonjs",
+  "homepage": "https://github.com/arelchan/openclaw-audit-plugin",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:arelchan/openclaw-audit-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/arelchan/openclaw-audit-plugin/issues"
+  },
   "engines": {
     "node": ">=18"
   },
@@ -19,7 +27,10 @@
     "ui",
     "openclaw.plugin.json",
     "README.md",
-    "PUBLISHING.md"
+    "PUBLISHING.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "LICENSE"
   ],
   "keywords": [
     "openclaw",
