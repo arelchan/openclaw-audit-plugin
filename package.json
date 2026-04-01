@@ -27,6 +27,7 @@
     "ui",
     "openclaw.plugin.json",
     "README.md",
+    "README.zh-CN.md",
     "PUBLISHING.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
@@ -37,6 +38,9 @@
     "plugin",
     "audit",
     "tracing",
-    "dashboard"
+    "dashboard",
+    "observability",
+    "llm",
+    "agent"
   ]
 }
