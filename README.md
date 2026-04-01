@@ -12,6 +12,8 @@ This plugin turns OpenClaw runtime activity into a trace-oriented debugging surf
 
 It writes JSONL span/event logs plus large artifacts to the local OpenClaw state directory, then serves a dashboard for exploring trace trees and node-level details.
 
+![OpenClaw Audit Plugin dashboard](./.github/assets/trace-console.png)
+
 ## At A Glance
 
 ```mermaid
