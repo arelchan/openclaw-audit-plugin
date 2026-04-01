@@ -12,6 +12,18 @@ This plugin turns OpenClaw runtime activity into a trace-oriented debugging surf
 
 It writes JSONL span/event logs plus large artifacts to the local OpenClaw state directory, then serves a dashboard for exploring trace trees and node-level details.
 
+## At A Glance
+
+```mermaid
+flowchart TD
+  A["OpenClaw session turn"] --> B["llm.call"]
+  B --> C["tool.call"]
+  C --> D["skill.read (derived)"]
+  C --> E["subagent.call (derived)"]
+  E --> F["child session"]
+  B --> G["structured input/output inspector"]
+```
+
 ## Quick Start
 
 1. Copy this plugin into an OpenClaw plugin directory
@@ -98,6 +110,23 @@ The dashboard uses a practical trace model:
 - `subagent.call`: derived child node under `sessions_spawn`
 
 This keeps the tree close to the runtime while still surfacing useful derived behavior.
+
+## Dashboard Views
+
+The dashboard is organized into three panes:
+
+- `Sessions`: session list and filtering
+- `Execution Flow`: traces and span trees
+- `Inspector`: structured input/output, metadata, and raw JSON
+
+The inspector is intentionally optimized for:
+
+- `llm.call`
+- `tool.call`
+- `subagent.call`
+- `skill.read`
+
+So the most important runtime actions are readable without digging through raw payloads.
 
 ## What It Writes
 
@@ -206,6 +235,15 @@ See also:
 - [PUBLISHING.md](./PUBLISHING.md)
 - [SECURITY.md](./SECURITY.md)
 - [CONTRIBUTING.md](./CONTRIBUTING.md)
+
+## Roadmap Ideas
+
+Possible future improvements:
+
+- screenshot-backed README examples
+- export adapters for external tracing backends
+- richer trace filtering and search
+- compatibility notes across OpenClaw versions
 
 ## License
 
