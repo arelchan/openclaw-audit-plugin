@@ -3,30 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { readJsonl } = require('./log-store');
 
 function getStateDir() {
   return process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
-}
-
-function getLogPath(name) {
-  return path.join(getStateDir(), 'logs', name);
-}
-
-function readJsonl(filePath) {
-  if (!fs.existsSync(filePath)) return [];
-  const text = fs.readFileSync(filePath, 'utf8');
-  return text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
 }
 
 function short(value, len = 8) {
@@ -128,7 +108,7 @@ function printTree(node, byParent, indent = '') {
 }
 
 function printEvents(traceId, limit = 20) {
-  const events = readJsonl(getLogPath('audit-events.log'))
+  const events = readJsonl('events')
     .filter((event) => event.traceId === traceId)
     .sort((a, b) => Date.parse(a.timestamp || '') - Date.parse(b.timestamp || ''));
   if (!events.length) return;
@@ -145,7 +125,7 @@ function printEvents(traceId, limit = 20) {
 }
 
 function main() {
-  const spans = dedupeSpans(readJsonl(getLogPath('audit-spans.log')));
+  const spans = dedupeSpans(readJsonl('spans'));
   if (!spans.length) {
     console.error('No spans found.');
     process.exit(1);

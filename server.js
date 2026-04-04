@@ -5,13 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { URL } = require('url');
+const { readJsonl, getLogsDir } = require('./log-store');
 
 const PORT = Number(process.env.TRACE_UI_PORT || 4318);
-const HOST = process.env.TRACE_UI_HOST || '127.0.0.1';
 const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
-const LOGS_DIR = path.join(STATE_DIR, 'logs');
-const SPANS_PATH = path.join(LOGS_DIR, 'audit-spans.log');
-const EVENTS_PATH = path.join(LOGS_DIR, 'audit-events.log');
+const LOGS_DIR = getLogsDir();
 const ARTIFACTS_DIR = path.join(LOGS_DIR, 'audit-artifacts');
 const STATIC_DIR = path.join(__dirname, 'ui');
 
@@ -29,23 +27,6 @@ function sendText(res, statusCode, text, contentType = 'text/plain; charset=utf-
     'Cache-Control': 'no-store'
   });
   res.end(text);
-}
-
-function readJsonl(filePath) {
-  if (!fs.existsSync(filePath)) return [];
-  return fs
-    .readFileSync(filePath, 'utf8')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
 }
 
 function parseTime(value) {
@@ -612,11 +593,11 @@ function buildTraceGroups(sessionSpans) {
 }
 
 function buildSessions() {
-  const rawSpans = dedupeSpans(readJsonl(SPANS_PATH)).map(normalizeSpan);
+  const rawSpans = dedupeSpans(readJsonl('spans')).map(normalizeSpan);
   const identityIndex = buildSessionIdentityIndex(rawSpans);
   const projectedSpans = rawSpans.map((span) => projectSpanForDisplay(span, identityIndex)).filter(Boolean);
   const spans = synthesizeSubagentCallSpans(projectedSpans, identityIndex);
-  const events = readJsonl(EVENTS_PATH);
+  const events = readJsonl('events');
   const spansBySessionId = new Map();
   for (const span of spans) {
     if (!span.sessionId) continue;
@@ -750,7 +731,7 @@ function serveStatic(reqPath, res) {
 }
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || HOST}`);
+  const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
 
   if (url.pathname === '/api/health') {
     sendJson(res, 200, { ok: true, port: PORT, stateDir: STATE_DIR });
@@ -776,6 +757,6 @@ const server = http.createServer((req, res) => {
   serveStatic(url.pathname, res);
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Trace UI running at http://${HOST}:${PORT}`);
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`Trace UI running at http://127.0.0.1:${PORT}`);
 });

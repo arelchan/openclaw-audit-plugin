@@ -1,7 +1,7 @@
 {
   "id": "audit-plugin",
-  "name": "OpenClaw Audit Plugin",
-  "description": "Structured audit logging and trace visualization for model calls, tools, sessions, skills, and subagents.",
+  "name": "Audit Plugin",
+  "description": "Structured audit logging for LLM input/output, tools, sessions, and subagents.",
   "version": "0.2.11",
   "configSchema": {
     "type": "object",
@@ -9,3 +9,4 @@
     "properties": {}
   }
 }
+

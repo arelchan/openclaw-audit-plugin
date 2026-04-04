@@ -4,43 +4,29 @@
   "description": "Structured audit logging and local trace visualization for OpenClaw.",
   "main": "index.js",
   "type": "commonjs",
-  "homepage": "https://github.com/arelchan/openclaw-audit-plugin",
-  "repository": {
-    "type": "git",
-    "url": "git@github.com:arelchan/openclaw-audit-plugin.git"
-  },
-  "bugs": {
-    "url": "https://github.com/arelchan/openclaw-audit-plugin/issues"
-  },
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "trace:ui": "node server.js",
     "trace:view": "node trace-viewer.js",
-    "check": "node --check index.js && node --check server.js && node --check trace-viewer.js && node --check ui/app.js"
+    "check": "node --check log-store.js && node --check index.js && node --check server.js && node --check trace-viewer.js && node --check ui/app.js"
   },
   "files": [
     "index.js",
+    "log-store.js",
     "server.js",
     "trace-viewer.js",
     "ui",
     "openclaw.plugin.json",
     "README.md",
-    "README.zh-CN.md",
-    "PUBLISHING.md",
-    "SECURITY.md",
-    "CONTRIBUTING.md",
-    "LICENSE"
+    "PUBLISHING.md"
   ],
   "keywords": [
     "openclaw",
     "plugin",
     "audit",
     "tracing",
-    "dashboard",
-    "observability",
-    "llm",
-    "agent"
+    "dashboard"
   ]
 }

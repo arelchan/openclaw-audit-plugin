@@ -1,7 +1,5 @@
 # OpenClaw Audit Plugin
 
-[中文说明](./README.zh-CN.md)
-
 Structured audit logging and local trace visualization for OpenClaw.
 
 This plugin turns OpenClaw runtime activity into a trace-oriented debugging surface:
@@ -13,74 +11,6 @@ This plugin turns OpenClaw runtime activity into a trace-oriented debugging surf
 - subagent dispatches linked to child sessions
 
 It writes JSONL span/event logs plus large artifacts to the local OpenClaw state directory, then serves a dashboard for exploring trace trees and node-level details.
-
-![OpenClaw Audit Plugin dashboard](./.github/assets/trace-console.png)
-
-## Highlights
-
-- practical trace tree for `session.turn`, `llm.call`, `tool.call`, `skill.read`, and `subagent.call`
-- structured inspector views instead of raw JSON first
-- local-first logging model with explicit artifact storage
-- dashboard and terminal viewer included in the same package
-
-## At A Glance
-
-```mermaid
-flowchart TD
-  A["OpenClaw session turn"] --> B["llm.call"]
-  B --> C["tool.call"]
-  C --> D["skill.read (derived)"]
-  C --> E["subagent.call (derived)"]
-  E --> F["child session"]
-  B --> G["structured input/output inspector"]
-```
-
-## Quick Start
-
-1. Copy this plugin into an OpenClaw plugin directory
-2. Load it through OpenClaw
-3. Trigger a few real sessions
-4. Run the local dashboard:
-
-```bash
-npm run trace:ui
-```
-
-5. Open:
-
-- `http://127.0.0.1:4318`
-
-## Configuration
-
-Runtime settings are intentionally small:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OPENCLAW_STATE_DIR` | `~/.openclaw` | Base directory for logs and artifacts |
-| `TRACE_UI_PORT` | `4318` | Dashboard port |
-| `TRACE_UI_HOST` | `127.0.0.1` | Dashboard bind host |
-
-## Privacy And Data Handling
-
-This plugin is designed for local inspection.
-
-It can record:
-
-- model inputs
-- model outputs
-- tool inputs and outputs
-- skill content reads
-- session and subagent activity
-
-That means the generated logs and artifacts may contain sensitive user data.
-
-Treat these paths as private runtime output:
-
-- `logs/audit-events.log`
-- `logs/audit-spans.log`
-- `logs/audit-artifacts/`
-
-Do not commit them to a repository or share them without review and redaction.
 
 ## Why This Exists
 
@@ -120,35 +50,6 @@ Typical shape:
 
 The plugin expects OpenClaw to call `index.js` through the standard plugin mechanism.
 
-## Trace Model
-
-The dashboard uses a practical trace model:
-
-- `session.turn`: turn-level root node
-- `llm.call`: model invocation with structured input and output
-- `tool.call`: tool invocation with input/output artifacts
-- `skill.read`: derived child node under a skill file read
-- `subagent.call`: derived child node under `sessions_spawn`
-
-This keeps the tree close to the runtime while still surfacing useful derived behavior.
-
-## Dashboard Views
-
-The dashboard is organized into three panes:
-
-- `Sessions`: session list and filtering
-- `Execution Flow`: traces and span trees
-- `Inspector`: structured input/output, metadata, and raw JSON
-
-The inspector is intentionally optimized for:
-
-- `llm.call`
-- `tool.call`
-- `subagent.call`
-- `skill.read`
-
-So the most important runtime actions are readable without digging through raw payloads.
-
 ## What It Writes
 
 By default, the plugin writes to the OpenClaw state directory:
@@ -168,13 +69,14 @@ The base directory is:
 npm run trace:ui
 ```
 
-Common overrides:
+Optional environment variables:
 
-```bash
-TRACE_UI_HOST=127.0.0.1 TRACE_UI_PORT=4318 npm run trace:ui
-```
+- `TRACE_UI_PORT`: dashboard port, defaults to `4318`
+- `OPENCLAW_STATE_DIR`: override the OpenClaw state directory
 
-Then open the host and port you configured.
+Then open:
+
+- `http://127.0.0.1:4318`
 
 Or run directly:
 
@@ -239,31 +141,6 @@ Keep local deployment glue outside the published package:
 - user-specific `LaunchAgents`
 - private config
 - logs and artifacts
-
-## Development
-
-Useful local commands:
-
-```bash
-npm run check
-npm run trace:ui
-npm run trace:view -- latest
-```
-
-See also:
-
-- [PUBLISHING.md](./PUBLISHING.md)
-- [SECURITY.md](./SECURITY.md)
-- [CONTRIBUTING.md](./CONTRIBUTING.md)
-
-## Roadmap Ideas
-
-Possible future improvements:
-
-- screenshot-backed README examples
-- export adapters for external tracing backends
-- richer trace filtering and search
-- compatibility notes across OpenClaw versions
 
 ## License
 

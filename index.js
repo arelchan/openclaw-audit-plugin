@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { appendJsonl, ensureDir, getStateDir } = require('./log-store');
 
 const AUDIT_SPAN_SCHEMA_VERSION = 'audit.span.v1';
 
@@ -9,39 +10,19 @@ const AUDIT_SPAN_SCHEMA_VERSION = 'audit.span.v1';
 // 用于把子 session spans 以 trace/树结构嵌回主会话 trace 展示。
 const subagentParentInfoByChildSessionId = new Map();
 
-function getStateDir() {
-  return process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
-}
-
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-function getAuditLogPath() {
-  return path.join(ensureDir(path.join(getStateDir(), 'logs')), 'audit-events.log');
-}
-
-function getAuditSpansPath() {
-  return path.join(ensureDir(path.join(getStateDir(), 'logs')), 'audit-spans.log');
-}
-
 function getAuditArtifactsDir() {
   return ensureDir(path.join(getStateDir(), 'logs', 'audit-artifacts'));
 }
 
-const AUDIT_LOG_PATH = getAuditLogPath();
-const AUDIT_SPANS_PATH = getAuditSpansPath();
-
-function appendJsonl(record) {
+function appendEvent(record) {
   try {
-    fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(record) + '\n', { encoding: 'utf8' });
+    appendJsonl('events', record);
   } catch {}
 }
 
 function appendSpan(span) {
   try {
-    fs.appendFileSync(AUDIT_SPANS_PATH, JSON.stringify(span) + '\n', { encoding: 'utf8' });
+    appendJsonl('spans', span);
   } catch {}
 }
 
@@ -148,6 +129,47 @@ function extractToolResultTextFromAgentMessage(message) {
   if (typeof content === 'string') return content;
   if (typeof message.text === 'string') return message.text;
   return toJsonText(message);
+}
+
+function inferToolNameFromText(value) {
+  const text = toJsonText(value);
+  if (!text) return '';
+  const patterns = [
+    /Tool\s+([A-Za-z0-9._:-]+)\s+not found/i,
+    /unknown tool[:\s]+([A-Za-z0-9._:-]+)/i,
+    /tool["'\s:]+([A-Za-z0-9._:-]+)["'\s]+(?:is\s+)?not found/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) return String(match[1]).trim();
+  }
+  return '';
+}
+
+function resolveToolName(event, pendingSpan = null) {
+  const directCandidates = [
+    event?.toolName,
+    event?.message?.toolName,
+    event?.details?.toolName,
+    pendingSpan?.attributes?.['tool.name']
+  ];
+  for (const candidate of directCandidates) {
+    const normalized = String(candidate || '').trim();
+    if (normalized) return normalized;
+  }
+
+  const inferredCandidates = [
+    event?.result,
+    event?.error,
+    event?.message,
+    event?.details,
+    event
+  ];
+  for (const candidate of inferredCandidates) {
+    const inferred = inferToolNameFromText(candidate);
+    if (inferred) return inferred;
+  }
+  return '';
 }
 
 /** 单条 assistant 片段 → 文本（兼容 string / { content,text,message } / 嵌套） */
@@ -275,7 +297,7 @@ function summarizeEvent(event) {
     provider: event.provider ?? null,
     model: event.model ?? null,
     callId: event.callId ?? null,
-    toolName: event.toolName ?? null,
+    toolName: resolveToolName(event) || null,
     toolCallId: event.toolCallId ?? null,
     historyMessagesCount: Array.isArray(event.historyMessages) ? event.historyMessages.length : null,
     imagesCount: event.imagesCount ?? null,
@@ -749,7 +771,7 @@ module.exports = async function auditPlugin(api) {
       });
     }
     if (options.includeEvent !== false) record.event = event;
-    appendJsonl(record);
+    appendEvent(record);
   }
 
   function flushPendingLlms(state, parentSpanId) {
@@ -1008,9 +1030,9 @@ module.exports = async function auditPlugin(api) {
     const state = getRunState(meta);
     const rootSpanId = ensureRootSpan(meta, state, ctx, event);
     const toolCallId = event?.toolCallId || null;
-    const toolName = event?.toolName ? String(event.toolName) : '';
+    const toolName = resolveToolName(event);
     const toolArgsArtifact = persistArtifact('tool-input', meta, {
-      toolName: event?.toolName,
+      toolName,
       toolCallId,
       params: event?.params
     }, {
@@ -1018,7 +1040,7 @@ module.exports = async function auditPlugin(api) {
       previewLength: 240
     });
     writeEventRecord('before_tool_call', meta, event, {
-      toolName: event?.toolName,
+      toolName: toolName || null,
       toolCallId,
       inputArtifactPath: toolArgsArtifact.path
     }, {
@@ -1029,14 +1051,14 @@ module.exports = async function auditPlugin(api) {
       type: 'tool_call',
       parentSpanId: rootSpanId,
       attributes: {
-        'tool.name': event?.toolName,
+        'tool.name': toolName || null,
         'tool.call_id': toolCallId,
         'tool.args_preview': previewText(event?.params ?? null, 300),
         ...artifactAttributes('tool.input', toolArgsArtifact)
       },
       events: [{ time: meta.timestamp, name: 'tool_before_call' }]
     });
-    const skillReadPath = extractSkillReadIntent(event?.toolName, event?.params);
+    const skillReadPath = extractSkillReadIntent(toolName, event?.params);
     if (skillReadPath) {
       span.attributes['skill.read.candidate_path'] = skillReadPath;
       span.attributes['skill.read.candidate_name'] = path.basename(path.dirname(skillReadPath));
@@ -1055,9 +1077,10 @@ module.exports = async function auditPlugin(api) {
     const state = getRunState(meta);
     const rootSpanId = ensureRootSpan(meta, state, ctx, event);
     const toolCallId = event?.toolCallId || null;
-    const toolName = event?.toolName ? String(event.toolName) : '';
+    const existingSpan = peekPendingTool(state, toolCallId, event?.toolName ? String(event.toolName) : '');
+    const toolName = resolveToolName(event, existingSpan);
     const toolResultArtifact = persistArtifact('tool-output', meta, {
-      toolName: event?.toolName,
+      toolName,
       toolCallId,
       result: event?.result,
       error: event?.error,
@@ -1067,7 +1090,7 @@ module.exports = async function auditPlugin(api) {
       previewLength: 240
     });
     writeEventRecord('after_tool_call', meta, event, {
-      toolName: event?.toolName,
+      toolName: toolName || null,
       toolCallId,
       error: event?.error,
       durationMs: event?.durationMs,
@@ -1077,11 +1100,11 @@ module.exports = async function auditPlugin(api) {
       artifact: toolResultArtifact
     });
     const span =
-      peekPendingTool(state, toolCallId, toolName) ||
+      existingSpan ||
       createSpan(meta, 'tool.call', {
         type: 'tool_call',
         parentSpanId: rootSpanId,
-        attributes: { 'tool.name': event?.toolName, 'tool.call_id': toolCallId, 'tool.args_preview': '' },
+        attributes: { 'tool.name': toolName || null, 'tool.call_id': toolCallId, 'tool.args_preview': '' },
         events: []
       });
 
@@ -1095,6 +1118,7 @@ module.exports = async function auditPlugin(api) {
     }
     span.endTime = meta.timestamp;
     span.status = { code: event?.error ? 'ERROR' : 'OK', message: event?.error ? String(event.error) : '' };
+    if (toolName && !span.attributes['tool.name']) span.attributes['tool.name'] = toolName;
     if (event?.result !== undefined) span.attributes['tool.result_preview'] = previewText(event?.result ?? null, 400);
     Object.assign(span.attributes, artifactAttributes('tool.output', toolResultArtifact));
     span.attributes['tool.error'] = event?.error || null;
@@ -1107,10 +1131,11 @@ module.exports = async function auditPlugin(api) {
     const state = getRunState(meta);
     const rootSpanId = ensureRootSpan(meta, state, ctx, event);
     const toolCallId = event?.toolCallId || null;
-    const toolName = event?.toolName ? String(event.toolName) : '';
+    const existingSpan = peekPendingTool(state, toolCallId, event?.toolName ? String(event.toolName) : '');
+    const toolName = resolveToolName(event, existingSpan);
     const persistedResultText = extractToolResultTextFromAgentMessage(event?.message);
     const persistedArtifact = persistArtifact('tool-persisted', meta, {
-      toolName: event?.toolName,
+      toolName,
       toolCallId,
       message: event?.message,
       persistedText: persistedResultText
@@ -1119,7 +1144,7 @@ module.exports = async function auditPlugin(api) {
       previewLength: 240
     });
     writeEventRecord('tool_result_persist', meta, event, {
-      toolName: event?.toolName,
+      toolName: toolName || null,
       toolCallId,
       persistedArtifactPath: persistedArtifact.path
     }, {
@@ -1131,11 +1156,12 @@ module.exports = async function auditPlugin(api) {
       createSpan(meta, 'tool.call', {
         type: 'tool_call',
         parentSpanId: rootSpanId,
-        attributes: { 'tool.name': event?.toolName, 'tool.call_id': toolCallId, 'tool.args_preview': '' },
+        attributes: { 'tool.name': toolName || null, 'tool.call_id': toolCallId, 'tool.args_preview': '' },
         events: []
       });
 
     span.endTime = meta.timestamp;
+    if (toolName && !span.attributes['tool.name']) span.attributes['tool.name'] = toolName;
     span.attributes['tool.result_preview'] = previewText(persistedResultText, 400);
     Object.assign(span.attributes, artifactAttributes('tool.persisted', persistedArtifact));
     const msg = event?.message;

@@ -1,21 +1,35 @@
 const state = {
   data: null,
-  viewMode: 'sessions',
+  appView: 'trace',
   selectedSessionId: null,
   selectedTraceKey: null,
   selectedSpanId: null,
   selectedTab: 'content',
   search: '',
   agent: 'all',
+  provider: 'all',
+  model: 'all',
+  apiStatus: 'all',
+  apiWindow: '24h',
   artifactCache: new Map(),
   isLoading: false,
   autoRefreshTimer: null,
-  openDetailKeys: new Set()
+  openDetailKeys: new Set(),
+  scrollPositions: new Map(),
+  windowScrollY: 0,
+  pendingScrollRestore: null,
+  detailsRenderSignature: null,
+  lastUpdated: null,
+  connectionStatus: 'idle'
 };
 
 const AUTO_REFRESH_MS = 5000;
 
 const elements = {
+  connectionStatus: document.getElementById('connectionStatus'),
+  lastUpdated: document.getElementById('lastUpdated'),
+  traceScene: document.getElementById('traceScene'),
+  apiScene: document.getElementById('apiScene'),
   listTitle: document.getElementById('listTitle'),
   sessionList: document.getElementById('sessionList'),
   traceList: document.getElementById('traceList'),
@@ -26,9 +40,12 @@ const elements = {
   detailsTitle: document.getElementById('detailsTitle'),
   searchInput: document.getElementById('searchInput'),
   agentFilter: document.getElementById('agentFilter'),
+  providerFilter: document.getElementById('providerFilter'),
+  modelFilter: document.getElementById('modelFilter'),
+  statusFilter: document.getElementById('statusFilter'),
   refreshButton: document.getElementById('refreshButton'),
   tabs: [...document.querySelectorAll('.tab[data-tab]')],
-  viewModeButtons: [...document.querySelectorAll('.tab[data-view-mode]')],
+  appViewButtons: [...document.querySelectorAll('.workspace-tab[data-app-view]:not([disabled])')],
   emptyStateTemplate: document.getElementById('emptyStateTemplate')
 };
 
@@ -44,6 +61,15 @@ function formatTime(value) {
   return new Intl.DateTimeFormat('zh-CN', {
     month: 'numeric',
     day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(new Date(value));
+}
+
+function formatTimeOnly(value) {
+  if (!value) return '--:--:--';
+  return new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit'
@@ -93,6 +119,55 @@ function hydrateOpenDetails() {
     node.addEventListener('toggle', () => {
       if (node.open) state.openDetailKeys.add(key);
       else state.openDetailKeys.delete(key);
+    });
+  });
+}
+
+function scrollNodes() {
+  return [
+    elements.sessionList,
+    elements.traceList,
+    elements.detailsBody,
+    ...Array.from(elements.apiScene?.querySelectorAll('[data-scroll-key]') || [])
+  ].filter(Boolean);
+}
+
+function captureScrollState() {
+  state.windowScrollY = window.scrollY || window.pageYOffset || 0;
+  scrollNodes().forEach((node) => {
+    const key = node.getAttribute('data-scroll-key') || node.id;
+    if (!key) return;
+    state.scrollPositions.set(key, {
+      top: node.scrollTop,
+      left: node.scrollLeft
+    });
+  });
+}
+
+function applyScrollState() {
+  scrollNodes().forEach((node) => {
+    const key = node.getAttribute('data-scroll-key') || node.id;
+    if (!key) return;
+    const pos = state.scrollPositions.get(key);
+    if (!pos) return;
+    if (typeof pos.top === 'number') node.scrollTop = pos.top;
+    if (typeof pos.left === 'number') node.scrollLeft = pos.left;
+  });
+  if (typeof state.windowScrollY === 'number') {
+    window.scrollTo({ top: state.windowScrollY, left: window.scrollX || 0, behavior: 'instant' });
+  }
+}
+
+function restoreScrollState() {
+  if (state.pendingScrollRestore) {
+    cancelAnimationFrame(state.pendingScrollRestore);
+    state.pendingScrollRestore = null;
+  }
+  state.pendingScrollRestore = requestAnimationFrame(() => {
+    applyScrollState();
+    state.pendingScrollRestore = requestAnimationFrame(() => {
+      applyScrollState();
+      state.pendingScrollRestore = null;
     });
   });
 }
@@ -165,9 +240,22 @@ function allApiCalls() {
 
 function filteredApiCalls() {
   const query = state.search.trim().toLowerCase();
+  const now = Date.now();
+  const windowMs =
+    state.apiWindow === '1h'
+      ? 60 * 60 * 1000
+      : state.apiWindow === '24h'
+        ? 24 * 60 * 60 * 1000
+        : state.apiWindow === '7d'
+          ? 7 * 24 * 60 * 60 * 1000
+          : null;
   return allApiCalls().filter((entry) => {
     const span = entry.span;
+    const startTime = new Date(span.startTime || entry.traceStartTime || 0).getTime();
+    if (windowMs != null && now - startTime > windowMs) return false;
     if (state.agent !== 'all' && entry.sessionAgentId !== state.agent) return false;
+    if (state.provider !== 'all' && (span.attributes?.['llm.provider'] || '') !== state.provider) return false;
+    if (state.model !== 'all' && (span.attributes?.['llm.model'] || '') !== state.model) return false;
     if (!query) return true;
     const haystack = [
       entry.sessionAgentId,
@@ -186,6 +274,21 @@ function filteredApiCalls() {
       .toLowerCase();
     return haystack.includes(query);
   });
+}
+
+function renderApiFilters() {
+  const calls = allApiCalls();
+  const providers = ['all', ...new Set(calls.map((entry) => entry.span.attributes?.['llm.provider']).filter(Boolean))];
+  const models = ['all', ...new Set(calls.map((entry) => entry.span.attributes?.['llm.model']).filter(Boolean))];
+  elements.providerFilter.innerHTML = providers
+    .map((value) => `<option value="${escapeHtml(value)}">${value === 'all' ? '全部 provider' : escapeHtml(value)}</option>`)
+    .join('');
+  elements.providerFilter.value = state.provider;
+  elements.modelFilter.innerHTML = models
+    .map((value) => `<option value="${escapeHtml(value)}">${value === 'all' ? '全部 model' : escapeHtml(value)}</option>`)
+    .join('');
+  elements.modelFilter.value = state.model;
+  elements.statusFilter.value = state.apiStatus;
 }
 
 function aggregateApiOverview(calls) {
@@ -232,6 +335,44 @@ function aggregateApiOverview(calls) {
   summary.topModel =
     [...summary.providerModelCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   return summary;
+}
+
+function groupApiByProviderModel(calls) {
+  const groups = new Map();
+  for (const entry of calls) {
+    const span = entry.span;
+    const provider = span.attributes?.['llm.provider'] || '-';
+    const model = span.attributes?.['llm.model'] || '-';
+    const key = `${provider}::${model}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        provider,
+        model,
+        total: 0,
+        success: 0,
+        failed: 0,
+        reported: 0,
+        unreported: 0,
+        input: 0,
+        cacheHit: 0,
+        output: 0
+      });
+    }
+    const bucket = groups.get(key);
+    bucket.total += 1;
+    if (span.isFailed) bucket.failed += 1;
+    else bucket.success += 1;
+    const usage = usageFromSpan(span);
+    if (usageReported(usage)) {
+      bucket.reported += 1;
+      if (usage.input != null) bucket.input += usage.input;
+      if (usage.cacheRead != null) bucket.cacheHit += usage.cacheRead;
+      if (usage.output != null) bucket.output += usage.output;
+    } else {
+      bucket.unreported += 1;
+    }
+  }
+  return [...groups.values()].sort((a, b) => b.total - a.total);
 }
 
 function currentSession() {
@@ -313,7 +454,7 @@ function usageReported(usage) {
 }
 
 function usageChipsFromUsage(usage) {
-  if (!usageReported(usage)) return ['usage 未统计'];
+  if (!usageReported(usage)) return ['Token 未上报'];
   const chips = [];
   if (usage.input != null) chips.push(`${usage.input} input`);
   if (usage.output != null) chips.push(`${usage.output} output`);
@@ -701,7 +842,6 @@ function renderModelInputCard(span, artifacts) {
   const prompt = llmInput.prompt || '';
   const systemPrompt = llmInput.systemPrompt || '';
   const historyMessages = Array.isArray(llmInput.historyMessages) ? llmInput.historyMessages : [];
-  const projectEntries = parseProjectContextEntries(systemPrompt);
   const historyItems = historyMessages.map(summarizeHistoryMessage);
   const promptSkills = parsePromptSkillEntries(span, artifacts);
 
@@ -709,7 +849,6 @@ function renderModelInputCard(span, artifacts) {
     <article class="content-card wide-card content-card-model-input">
       <header>
         <h4>Model Input</h4>
-        <span class="card-note">structured view</span>
       </header>
       <div class="model-input-layout">
         <section class="model-panel">
@@ -762,36 +901,6 @@ function renderModelInputCard(span, artifacts) {
               </div>
             </summary>
             <pre class="structured-pre">${escapeHtml(systemPrompt || '(empty system prompt)')}</pre>
-          </details>
-        </section>
-        <section class="model-panel wide-panel">
-          <details class="project-context-details" data-detail-key="${escapeHtml(detailKey(span, 'project-context'))}">
-            <summary class="model-panel-head">
-              <strong>Project Context</strong>
-              <div class="overview-tags">
-                <span class="summary-chip">${projectEntries.filter((entry) => entry.status === 'loaded').length} loaded</span>
-                <span class="summary-chip">${projectEntries.filter((entry) => entry.status === 'missing').length} not present</span>
-              </div>
-            </summary>
-            <div class="project-context-list">
-              ${
-                projectEntries.length
-                  ? projectEntries
-                      .map(
-                        (entry) => `
-                          <details class="project-context-item" data-detail-key="${escapeHtml(detailKey(span, `project:${entry.path}`))}">
-                            <summary class="project-context-head">
-                              <span class="summary-chip summary-chip-${entry.status === 'missing' ? 'muted' : 'success'}">${escapeHtml(entry.status === 'missing' ? 'not present' : 'loaded')}</span>
-                              <span class="project-context-path">${escapeHtml(entry.path)}</span>
-                            </summary>
-                            <pre class="project-context-preview">${escapeHtml(entry.preview || '(empty preview)')}</pre>
-                          </details>
-                        `
-                      )
-                      .join('')
-                  : '<div class="trace-tree-note">没有解析到 project context 文件。</div>'
-              }
-            </div>
           </details>
         </section>
         <section class="model-panel wide-panel">
@@ -865,7 +974,6 @@ function renderModelOutputCard(span, artifacts) {
     <article class="content-card wide-card content-card-model-output">
       <header>
         <h4>Model Output</h4>
-        <span class="card-note">structured view</span>
       </header>
       <div class="model-input-layout">
         <section class="model-panel wide-panel">
@@ -900,7 +1008,6 @@ function renderToolCallCard(span, artifacts) {
     <article class="content-card wide-card">
       <header>
         <h4>Tool Input</h4>
-        <span class="card-note">${escapeHtml(toolName)}</span>
       </header>
       <pre class="structured-pre">${escapeHtml(prettyValue(inputParams))}</pre>
     </article>
@@ -966,14 +1073,12 @@ function renderSubagentCallCard(span, artifacts) {
     <article class="content-card wide-card">
       <header>
         <h4>Subagent Input</h4>
-        <span class="card-note">${escapeHtml(dispatchKind)}</span>
       </header>
       <pre class="structured-pre">${escapeHtml(prettyValue(dispatchInput))}</pre>
     </article>
     <article class="content-card wide-card">
       <header>
         <h4>Subagent Output</h4>
-        <span class="card-note">${escapeHtml(outputSource)}</span>
       </header>
       <pre class="structured-pre">${escapeHtml(prettyValue(outputText ?? dispatchOutput, outputText || dispatchOutput ? '(empty)' : '还没有拿到子 agent 的最终返回'))}</pre>
     </article>
@@ -1008,7 +1113,7 @@ async function loadArtifacts(span) {
 }
 
 function renderAgentFilter() {
-  const source = state.viewMode === 'api'
+  const source = state.appView === 'api'
     ? allApiCalls().map((entry) => entry.sessionAgentId)
     : allSessions().map((session) => session.agentId);
   const agents = ['all', ...new Set(source.filter(Boolean))];
@@ -1019,7 +1124,7 @@ function renderAgentFilter() {
 }
 
 function syncSelection() {
-  if (state.viewMode === 'api') {
+  if (state.appView === 'api') {
     const calls = filteredApiCalls();
     if (!calls.length) {
       state.selectedSessionId = null;
@@ -1060,8 +1165,8 @@ function syncSelection() {
 }
 
 function renderSessionList() {
-  if (state.viewMode === 'api') {
-    renderApiCallList();
+  if (state.appView === 'api') {
+    elements.sessionList.innerHTML = '';
     return;
   }
   const sessions = filteredSessions();
@@ -1103,57 +1208,7 @@ function renderSessionList() {
   }
 }
 
-function renderApiCallList() {
-  const calls = filteredApiCalls();
-  elements.sessionList.innerHTML = '';
-  if (!calls.length) {
-    elements.sessionList.appendChild(cloneEmptyState());
-    return;
-  }
-
-  for (const entry of calls) {
-    const span = entry.span;
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = `session-card${span.spanId === state.selectedSpanId ? ' is-active' : ''}`;
-    card.title = `${span.spanId}\n${entry.traceId}`.trim();
-    const modelInfo = [span.attributes?.['llm.provider'], span.attributes?.['llm.model']].filter(Boolean).join(' / ');
-    const usageChips = llmUsageSummary(span);
-
-    card.innerHTML = `
-      <div class="session-card-head">
-        <span class="session-pill">model call</span>
-        <span class="session-badge">${formatDuration(span.durationMs)}</span>
-      </div>
-      <div class="session-title-row">
-        <div class="session-id">${escapeHtml(shortId(span.spanId, 18))}</div>
-        <div class="session-channel">${escapeHtml(entry.sessionAgentId || 'agent')}</div>
-      </div>
-      <div class="session-meta">
-        <div>${formatTime(span.startTime)}</div>
-        <div>${escapeHtml(shortId(entry.traceId, 14))}</div>
-      </div>
-      <div class="trace-summary">
-        ${modelInfo ? `<span class="summary-chip">${escapeHtml(modelInfo)}</span>` : ''}
-        ${usageChips.map((chip) => `<span class="summary-chip${chip === 'usage 未统计' ? ' summary-chip-soft' : ''}">${escapeHtml(chip)}</span>`).join('')}
-      </div>
-      ${span.isFailed ? '<div class="session-chain">error</div>' : ''}
-    `;
-    card.addEventListener('click', () => {
-      state.selectedSessionId = entry.sessionId;
-      state.selectedTraceKey = entry.traceKey;
-      state.selectedSpanId = span.spanId;
-      render();
-    });
-    elements.sessionList.appendChild(card);
-  }
-}
-
 function renderTraceList() {
-  if (state.viewMode === 'api') {
-    renderApiTraceContext();
-    return;
-  }
   const session = currentSession();
   elements.traceList.innerHTML = '';
   if (!session) {
@@ -1190,42 +1245,14 @@ function renderTraceList() {
             <div>${trace.spanCount} spans</div>
           </div>
         </div>
-        <button class="ghost-button" type="button" data-trace="${trace.traceKey}">定位</button>
       </div>
       <div class="trace-summary">
         <span class="summary-chip">${summary.modelCalls} model</span>
         <span class="summary-chip">${summary.toolCalls} tool</span>
         <span class="summary-chip">${summary.subagents} subagent</span>
-        <span class="summary-chip">${summary.promptSkills.length} prompt skills</span>
-        <span class="summary-chip">${summary.readSkills.length} read skills</span>
-        ${
-          summary.usage.reportedCalls
-            ? `
-              <span class="summary-chip">${summary.usage.input} input</span>
-              <span class="summary-chip">${summary.usage.output} output</span>
-              ${
-                summary.usage.cacheRead
-                  ? `<span class="summary-chip">${summary.usage.cacheRead} cache hit</span>`
-                  : ''
-              }
-              ${
-                summary.usage.unreportedCalls
-                  ? `<span class="summary-chip summary-chip-soft">${summary.usage.unreportedCalls} 未统计</span>`
-                  : ''
-              }
-            `
-            : summary.modelCalls
-              ? `<span class="summary-chip summary-chip-soft">usage 未统计</span>`
-              : ''
-        }
       </div>
       <div class="trace-tree"></div>
     `;
-    group.querySelector('[data-trace]').addEventListener('click', () => {
-      state.selectedTraceKey = trace.traceKey;
-      state.selectedSpanId = preferredSpan(trace)?.spanId || null;
-      render();
-    });
 
     const treeHost = group.querySelector('.trace-tree');
     if (!visibleSpans.length) {
@@ -1243,113 +1270,263 @@ function renderTraceList() {
 function renderApiOverview(summary) {
   return `
     <section class="api-overview">
-      <article class="overview-row">
-        <div class="overview-title"><strong>calls</strong></div>
-        <div class="overview-tags">
-          <span class="summary-chip">${summary.totalCalls} total</span>
-          <span class="summary-chip${summary.failedCalls ? ' summary-chip-error' : ''}">${summary.failedCalls} failed</span>
-          <span class="summary-chip">${formatDuration(summary.avgDurationMs)}</span>
-        </div>
+      <article class="api-stat-card">
+        <div class="api-stat-label">总调用</div>
+        <div class="api-stat-value">${summary.totalCalls}</div>
       </article>
-      <article class="overview-row">
-        <div class="overview-title"><strong>tokens</strong></div>
-        <div class="overview-tags">
-          <span class="summary-chip">${summary.input} input</span>
-          <span class="summary-chip">${summary.output} output</span>
-          <span class="summary-chip">${summary.total} total</span>
-        </div>
+      <article class="api-stat-card api-stat-card-success">
+        <div class="api-stat-label">成功</div>
+        <div class="api-stat-value">${summary.totalCalls - summary.failedCalls}</div>
       </article>
-      <article class="overview-row">
-        <div class="overview-title"><strong>cache & cost</strong></div>
-        <div class="overview-tags">
-          <span class="summary-chip">${summary.cacheRead} cache hit</span>
-          ${
-            summary.cacheWrite
-              ? `<span class="summary-chip">${summary.cacheWrite} cache write</span>`
-              : ''
-          }
-          ${
-            summary.costTotal
-              ? `<span class="summary-chip">cost ${escapeHtml(String(summary.costTotal))}</span>`
-              : ''
-          }
-        </div>
+      <article class="api-stat-card api-stat-card-error">
+        <div class="api-stat-label">失败</div>
+        <div class="api-stat-value">${summary.failedCalls}</div>
       </article>
-      <article class="overview-row">
-        <div class="overview-title"><strong>coverage</strong></div>
-        <div class="overview-tags">
-          <span class="summary-chip">${summary.usageReportedCalls} usage reported</span>
-          <span class="summary-chip${summary.usageUnreportedCalls ? ' summary-chip-soft' : ''}">${summary.usageUnreportedCalls} 未统计</span>
-          ${
-            summary.topModel
-              ? `<span class="summary-chip">${escapeHtml(summary.topModel)}</span>`
-              : ''
-          }
-        </div>
+      <article class="api-stat-card">
+        <div class="api-stat-label">已上报 Token</div>
+        <div class="api-stat-value">${summary.usageReportedCalls}</div>
+      </article>
+      <article class="api-stat-card api-stat-card-warning">
+        <div class="api-stat-label">未上报 Token</div>
+        <div class="api-stat-value">${summary.usageUnreportedCalls}</div>
+      </article>
+      <article class="api-stat-card">
+        <div class="api-stat-label">输入 Token（未命中缓存）</div>
+        <div class="api-stat-value">${summary.input}</div>
+      </article>
+      <article class="api-stat-card">
+        <div class="api-stat-label">输入 Token（命中缓存）</div>
+        <div class="api-stat-value">${summary.cacheRead}</div>
+      </article>
+      <article class="api-stat-card">
+        <div class="api-stat-label">输出 Token</div>
+        <div class="api-stat-value">${summary.output}</div>
       </article>
     </section>
   `;
 }
 
-function renderApiTraceContext() {
-  const entry = currentApiCall();
-  elements.traceList.innerHTML = '';
-  if (!entry) {
-    elements.traceTitle.textContent = '选择一个 API 调用';
-    elements.traceMeta.textContent = '';
-    elements.traceList.appendChild(cloneEmptyState());
-    return;
+function renderApiCallListRows(calls) {
+  if (!calls.length) {
+    return `
+      <tr>
+        <td class="api-table-empty" colspan="8">暂无明细</td>
+      </tr>
+    `;
   }
+  return calls.map((entry) => {
+    const span = entry.span;
+    const usage = usageFromSpan(span);
+    const provider = span.attributes?.['llm.provider'] || '-';
+    const model = span.attributes?.['llm.model'] || '-';
+    return `
+      <tr class="api-table-row${span.spanId === state.selectedSpanId ? ' is-active' : ''}${span.isFailed ? ' is-failed' : ''}" data-span-id="${escapeHtml(span.spanId)}">
+        <td>${escapeHtml(formatTime(span.startTime))}</td>
+        <td>${span.isFailed ? '<span class="summary-chip summary-chip-error">失败</span>' : '<span class="summary-chip summary-chip-success">成功</span>'}</td>
+        <td>${escapeHtml(provider)}</td>
+        <td>${escapeHtml(model)}</td>
+        <td>${escapeHtml(String(usage.input ?? 0))}</td>
+        <td>${escapeHtml(String(usage.cacheRead ?? 0))}</td>
+        <td>${escapeHtml(String(usage.output ?? 0))}</td>
+        <td>${usageReported(usage) ? escapeHtml(String(usage.total ?? 0)) : escapeHtml(span.failureLabel || 'Token 未上报')}</td>
+      </tr>
+    `;
+  }).join('');
+}
 
-  const session = currentSession();
-  const trace = currentTrace();
-  const overview = aggregateApiOverview(filteredApiCalls());
-  const summary = traceSummary(trace);
-  const visibleTree = visibleTraceTree(trace.tree || []);
-  elements.traceTitle.textContent = `${[entry.span.attributes?.['llm.provider'], entry.span.attributes?.['llm.model']].filter(Boolean).join(' / ') || 'model call'}`;
-  elements.traceMeta.innerHTML = `
-    <div>${escapeHtml(session?.agentId || '-')}</div>
-    <div>${escapeHtml(shortId(trace?.traceId || '-', 14))}</div>
-    <div>${formatTime(entry.span.startTime)}</div>
-  `;
+function apiWindowLabel() {
+  return {
+    all: '全部',
+    '7d': '近一周',
+    '24h': '近24h',
+    '1h': '近1h'
+  }[state.apiWindow] || '近24h';
+}
 
-  elements.traceList.innerHTML = renderApiOverview(overview);
-  const group = document.createElement('section');
-  group.className = 'trace-group is-active';
-  group.title = trace?.traceKey || trace?.traceId || '';
-  group.innerHTML = `
-    <div class="trace-header">
-      <div class="trace-title">
-        <div class="trace-topline">
-          <span class="trace-pill">trace context</span>
-          <span class="span-chip trace-mini-id">${escapeHtml(shortId(trace?.traceId || '-', 10))}</span>
-          <span class="trace-status">${formatDuration(trace?.durationMs)}</span>
+function renderApiToolbar(calls) {
+  const providers = ['all', ...new Set(allApiCalls().map((entry) => entry.span.attributes?.['llm.provider']).filter(Boolean))];
+  const models = ['all', ...new Set(allApiCalls().map((entry) => entry.span.attributes?.['llm.model']).filter(Boolean))];
+  const agents = ['all', ...new Set(allApiCalls().map((entry) => entry.sessionAgentId).filter(Boolean))];
+
+  return `
+    <div class="api-toolbar">
+      <div class="api-toolbar-groups">
+        <div class="api-window-switch" role="tablist" aria-label="时间范围">
+          ${[
+            ['all', '全部'],
+            ['7d', '近一周'],
+            ['24h', '近24h'],
+            ['1h', '近1h']
+          ]
+            .map(
+              ([value, label]) => `
+                <button class="api-window-pill${state.apiWindow === value ? ' is-active' : ''}" type="button" data-api-window="${value}">
+                  ${label}
+                </button>
+              `
+            )
+            .join('')}
         </div>
-        <div class="trace-meta">
-          <div>${formatTime(trace?.startTime)} -> ${formatTime(trace?.endTime)}</div>
-          <div>${trace?.spanCount || 0} spans</div>
+        <div class="api-select-group">
+          <label class="api-inline-field">
+            <span>Agent</span>
+            <select id="apiAgentFilterInline">
+              ${agents
+                .map((value) => `<option value="${escapeHtml(value)}"${value === state.agent ? ' selected' : ''}>${value === 'all' ? '全部 agent' : escapeHtml(value)}</option>`)
+                .join('')}
+            </select>
+          </label>
+          <label class="api-inline-field">
+            <span>Provider</span>
+            <select id="apiProviderFilterInline">
+              ${providers
+                .map((value) => `<option value="${escapeHtml(value)}"${value === state.provider ? ' selected' : ''}>${value === 'all' ? '全部' : escapeHtml(value)}</option>`)
+                .join('')}
+            </select>
+          </label>
+          <label class="api-inline-field">
+            <span>Model</span>
+            <select id="apiModelFilterInline">
+              ${models
+                .map((value) => `<option value="${escapeHtml(value)}"${value === state.model ? ' selected' : ''}>${value === 'all' ? '全部' : escapeHtml(value)}</option>`)
+                .join('')}
+            </select>
+          </label>
         </div>
       </div>
+      <div class="api-toolbar-side">
+        <div class="api-filter-summary">
+          <span class="summary-chip">${calls.length} 次调用</span>
+        </div>
+        <button class="ghost-button" type="button" id="apiRefreshButton">刷新</button>
+      </div>
     </div>
-    <div class="trace-summary">
-      <span class="summary-chip">${summary.modelCalls} model</span>
-      <span class="summary-chip">${summary.toolCalls} tool</span>
-      <span class="summary-chip">${summary.subagents} subagent</span>
-      <span class="summary-chip">${summary.readSkills.length} skill.read</span>
-    </div>
-    <div class="trace-tree"></div>
   `;
+}
 
-  const treeHost = group.querySelector('.trace-tree');
-  if (!visibleTree.length) {
-    const empty = document.createElement('div');
-    empty.className = 'trace-tree-note';
-    empty.textContent = '这个 trace 当前没有可展示的主要执行节点。';
-    treeHost.appendChild(empty);
-  } else {
-    visibleTree.forEach((node) => renderSpanNode(node, treeHost));
-  }
-  elements.traceList.appendChild(group);
+function renderApiDashboard() {
+  const scopedCalls = filteredApiCalls();
+  const detailCalls = scopedCalls.filter((entry) => {
+    const usage = usageFromSpan(entry.span);
+    if (state.apiStatus === 'error') return entry.span.isFailed;
+    if (state.apiStatus === 'ok') return !entry.span.isFailed;
+    if (state.apiStatus === 'unreported') return !usageReported(usage);
+    return true;
+  });
+  const overview = aggregateApiOverview(scopedCalls);
+  const providerRows = groupApiByProviderModel(scopedCalls);
+  const hasScopedCalls = scopedCalls.length > 0;
+  return `
+    <section class="api-dashboard">
+      <section class="api-dashboard-board api-scope-panel">
+        <div class="api-dashboard-inner api-board-scope">
+          ${renderApiToolbar(scopedCalls)}
+        </div>
+        ${
+          hasScopedCalls
+            ? `
+              <div class="api-board-main">
+                <section class="api-board-section api-overview-panel">
+                  <div class="api-panel-head">
+                    <div class="api-panel-title">
+                      <h3>关键指标</h3>
+                    </div>
+                  </div>
+                  <div class="api-dashboard-inner">
+                    ${renderApiOverview(overview)}
+                  </div>
+                </section>
+                <section class="api-board-section api-provider-panel">
+                  <div class="api-panel-head">
+                    <div class="api-panel-title">
+                      <h3>按厂商 / 模型</h3>
+                    </div>
+                  </div>
+                  <div class="api-dashboard-inner">
+                      <div class="api-table-wrap" data-scroll-key="api-provider-table">
+                      <table class="api-table">
+                        <thead>
+                          <tr>
+                            <th>厂商</th>
+                            <th>模型</th>
+                            <th>总调用</th>
+                            <th>成功</th>
+                            <th>失败</th>
+                            <th>已上报 Token</th>
+                            <th>输入（未命中缓存）</th>
+                            <th>输入（命中缓存）</th>
+                            <th>输出 Token</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${
+                            providerRows.length
+                              ? providerRows.map((row) => `
+                                <tr>
+                                  <td>${escapeHtml(row.provider)}</td>
+                                  <td>${escapeHtml(row.model)}</td>
+                                  <td>${row.total}</td>
+                                  <td>${row.success}</td>
+                                  <td>${row.failed}</td>
+                                  <td>${row.reported}</td>
+                                  <td>${row.input}</td>
+                                  <td>${row.cacheHit}</td>
+                                  <td>${row.output}</td>
+                                </tr>
+                              `).join('')
+                              : `<tr><td class="api-table-empty" colspan="9">暂无数据</td></tr>`
+                          }
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            `
+            : `
+              <div class="api-board-empty">
+                <h3>当前范围没有模型调用</h3>
+                <p>先调整时间范围或筛选条件，再看关键指标和厂商模型分布。</p>
+              </div>
+            `
+        }
+      </section>
+      <section class="api-dashboard-panel api-detail-panel">
+        <div class="api-panel-head">
+          <div class="api-panel-title">
+            <h3>调用明细（最近 ${Math.min(detailCalls.length, 500)} 条）</h3>
+          </div>
+          <div class="overview-tags">
+            <button class="api-status-pill${state.apiStatus === 'all' ? ' is-active' : ''}" data-api-status="all" type="button">全部</button>
+            <button class="api-status-pill${state.apiStatus === 'ok' ? ' is-active' : ''}" data-api-status="ok" type="button">成功</button>
+            <button class="api-status-pill${state.apiStatus === 'error' ? ' is-active' : ''}" data-api-status="error" type="button">失败</button>
+            <button class="api-status-pill${state.apiStatus === 'unreported' ? ' is-active' : ''}" data-api-status="unreported" type="button">未上报</button>
+          </div>
+        </div>
+        <div class="api-dashboard-inner">
+          <div class="api-table-wrap" data-scroll-key="api-detail-table">
+            <table class="api-table api-call-detail-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>状态</th>
+                  <th>厂商</th>
+                  <th>模型</th>
+                  <th>输入（未命中缓存）</th>
+                  <th>输入（命中）</th>
+                  <th>输出</th>
+                  <th>总 Token / 失败原因</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${renderApiCallListRows(detailCalls)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </section>
+  `;
 }
 
 function renderSpanNode(node, host) {
@@ -1379,9 +1556,8 @@ function renderSpanNode(node, host) {
   button.addEventListener('click', () => {
     state.selectedTraceKey = node.traceKey || currentTrace()?.traceKey || null;
     state.selectedSpanId = node.spanId;
-    renderSessionList();
-    renderTraceList();
-    renderDetails();
+    state.detailsRenderSignature = null;
+    render();
   });
   host.appendChild(button);
   (node.children || []).forEach((child) => renderSpanNode(child, host));
@@ -1553,7 +1729,6 @@ function renderSkillReadCard(trace, span, artifacts) {
     <article class="content-card wide-card">
       <header>
         <h4>Skill Input</h4>
-        <span class="card-note">${escapeHtml(readInputValue.skill)}</span>
       </header>
       <pre class="structured-pre">${escapeHtml(prettyValue(readInputValue))}</pre>
     </article>
@@ -1621,7 +1796,6 @@ function renderSessionTurnCard(trace, span) {
     <article class="content-card wide-card">
       <header>
         <h4>Turn Overview</h4>
-        <span class="card-note">${escapeHtml(trigger)}</span>
       </header>
       <div class="overview-stack">
         <section class="overview-row">
@@ -1697,15 +1871,12 @@ function renderContent(span, trace, artifacts) {
       <article class="content-card">
         <header>
           <h4>暂无 artifact</h4>
-          <span class="card-note">showing span attributes</span>
-        </header>
+      </header>
         <pre>${escapeHtml(JSON.stringify(span.attributes || {}, null, 2))}</pre>
       </article>
     `;
 
-  const heroSubtitle = span.name === 'llm.call'
-    ? 'structured input view'
-    : (span.displaySubtitle || span.kind);
+  const heroSubtitle = span.displaySubtitle || '';
   const heroModelInfo = span.name === 'llm.call'
     ? [span.attributes?.['llm.provider'], span.attributes?.['llm.model']].filter(Boolean).join(' / ')
     : '';
@@ -1720,15 +1891,13 @@ function renderContent(span, trace, artifacts) {
       <article class="content-card hero-card">
         <header>
           <h4>${escapeHtml(span.displayTitle)}</h4>
-          <span class="card-note">${escapeHtml(heroSubtitle)}</span>
+          ${heroSubtitle ? `<span class="card-note">${escapeHtml(heroSubtitle)}</span>` : ''}
         </header>
         <div class="hero-metrics">
           <span class="summary-chip">${formatDuration(span.durationMs)}</span>
           <span class="${heroStatusClass}">${escapeHtml(heroStatusText)}</span>
           ${heroModelInfo ? `<span class="summary-chip">${escapeHtml(heroModelInfo)}</span>` : ''}
           ${usageChips.map((chip) => `<span class="summary-chip${chip === 'usage 未统计' ? ' summary-chip-soft' : ''}">${escapeHtml(chip)}</span>`).join('')}
-          <span class="summary-chip">${formatTime(span.startTime)}</span>
-          <span class="summary-chip muted">${escapeHtml(shortId(span.spanId, 12))}</span>
         </div>
       </article>
       ${renderSessionTurnCard(trace, span)}
@@ -1762,6 +1931,8 @@ function renderRaw(span, artifacts) {
 }
 
 async function renderDetails() {
+  if (state.appView === 'api') return;
+  state.detailsRenderSignature = currentDetailsSignature();
   captureOpenDetails();
   const trace = currentTrace();
   const span = currentSpan();
@@ -1769,6 +1940,7 @@ async function renderDetails() {
   if (!trace || !span) {
     elements.detailsTitle.textContent = '选择一个 Span';
     elements.detailsBody.appendChild(cloneEmptyState());
+    restoreScrollState();
     return;
   }
 
@@ -1781,34 +1953,108 @@ async function renderDetails() {
   if (state.selectedTab === 'metadata') {
     elements.detailsBody.innerHTML = renderMetadata(span);
     hydrateOpenDetails();
+    restoreScrollState();
     return;
   }
 
   if (state.selectedTab === 'raw') {
     elements.detailsBody.innerHTML = renderRaw(span, artifacts);
     hydrateOpenDetails();
+    restoreScrollState();
     return;
   }
 
   elements.detailsBody.innerHTML = renderContent(span, trace, artifacts);
   hydrateOpenDetails();
+  restoreScrollState();
+}
+
+function currentDetailsSignature() {
+  const trace = currentTrace();
+  const span = currentSpan();
+  if (!trace || !span) return null;
+  return [state.appView, state.selectedTab, state.selectedSessionId, state.selectedTraceKey, state.selectedSpanId].join('::');
 }
 
 function render() {
+  captureScrollState();
   syncSelection();
   renderAgentFilter();
-  elements.listTitle.textContent = state.viewMode === 'api' ? 'API Calls' : 'Sessions';
-  elements.flowEyebrow.textContent = state.viewMode === 'api' ? 'API Overview' : 'Execution Flow';
-  elements.searchInput.placeholder =
-    state.viewMode === 'api' ? 'span / trace / model / tool' : 'session / trace / agent';
-  renderSessionList();
-  renderTraceList();
-  renderDetails();
+  renderApiFilters();
+  if (elements.connectionStatus) {
+    elements.connectionStatus.textContent = state.connectionStatus === 'connected' ? '已连接' : '未连接';
+    elements.connectionStatus.classList.toggle('is-connected', state.connectionStatus === 'connected');
+    elements.connectionStatus.classList.toggle('is-disconnected', state.connectionStatus !== 'connected');
+  }
+  if (elements.lastUpdated) {
+    elements.lastUpdated.textContent = formatTimeOnly(state.lastUpdated);
+  }
+  document.body.classList.toggle('app-view-api', state.appView === 'api');
+  if (state.appView === 'api') {
+    elements.apiScene.innerHTML = renderApiDashboard();
+    restoreScrollState();
+    const agentInline = document.getElementById('apiAgentFilterInline');
+    const providerInline = document.getElementById('apiProviderFilterInline');
+    const modelInline = document.getElementById('apiModelFilterInline');
+    const apiRefreshButton = document.getElementById('apiRefreshButton');
+    agentInline?.addEventListener('change', (event) => {
+      state.agent = event.target.value;
+      render();
+    });
+    providerInline?.addEventListener('change', (event) => {
+      state.provider = event.target.value;
+      render();
+    });
+    modelInline?.addEventListener('change', (event) => {
+      state.model = event.target.value;
+      render();
+    });
+    apiRefreshButton?.addEventListener('click', () => {
+      state.artifactCache.clear();
+      loadData();
+    });
+    elements.apiScene.querySelectorAll('[data-api-window]').forEach((button) => {
+      button.addEventListener('click', () => {
+        state.apiWindow = button.dataset.apiWindow;
+        render();
+      });
+    });
+    elements.apiScene.querySelectorAll('[data-api-status]').forEach((button) => {
+      button.addEventListener('click', () => {
+        state.apiStatus = button.dataset.apiStatus;
+        render();
+      });
+    });
+    elements.apiScene.querySelectorAll('.api-table-row[data-span-id]').forEach((row) => {
+      row.addEventListener('click', () => {
+        const entry = filteredApiCalls().find((item) => item.span.spanId === row.dataset.spanId);
+        if (!entry) return;
+        state.selectedSessionId = entry.sessionId;
+        state.selectedTraceKey = entry.traceKey;
+        state.selectedSpanId = entry.span.spanId;
+        state.appView = 'trace';
+        state.detailsRenderSignature = null;
+        render();
+      });
+    });
+  } else {
+  elements.listTitle.textContent = '会话列表';
+  elements.searchInput.placeholder = 'session / trace / agent';
+    renderSessionList();
+    renderTraceList();
+    const nextDetailsSignature = currentDetailsSignature();
+    if (nextDetailsSignature !== state.detailsRenderSignature) {
+      state.detailsRenderSignature = nextDetailsSignature;
+      renderDetails();
+    } else {
+      restoreScrollState();
+    }
+  }
   elements.tabs.forEach((tab) => {
     tab.classList.toggle('is-active', tab.dataset.tab === state.selectedTab);
   });
-  elements.viewModeButtons.forEach((button) => {
-    button.classList.toggle('is-active', button.dataset.viewMode === state.viewMode);
+  elements.appViewButtons.forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.appView === state.appView);
   });
 }
 
@@ -1823,8 +2069,11 @@ async function loadData(options = {}) {
     const response = await fetch(`/api/data?ts=${Date.now()}`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`API failed with status ${response.status}`);
     state.data = await response.json();
+    state.connectionStatus = 'connected';
+    state.lastUpdated = new Date().toISOString();
     render();
   } catch (error) {
+    state.connectionStatus = 'disconnected';
     if (!silent) {
       elements.sessionList.innerHTML = `
         <div class="empty-state">
@@ -1853,11 +2102,28 @@ function startAutoRefresh() {
 
 elements.searchInput.addEventListener('input', (event) => {
   state.search = event.target.value;
+  state.detailsRenderSignature = null;
   render();
 });
 
 elements.agentFilter.addEventListener('change', (event) => {
   state.agent = event.target.value;
+  state.detailsRenderSignature = null;
+  render();
+});
+
+elements.providerFilter.addEventListener('change', (event) => {
+  state.provider = event.target.value;
+  render();
+});
+
+elements.modelFilter.addEventListener('change', (event) => {
+  state.model = event.target.value;
+  render();
+});
+
+elements.statusFilter.addEventListener('change', (event) => {
+  state.apiStatus = event.target.value;
   render();
 });
 
@@ -1866,9 +2132,9 @@ elements.refreshButton.addEventListener('click', () => {
   loadData();
 });
 
-elements.viewModeButtons.forEach((button) => {
+elements.appViewButtons.forEach((button) => {
   button.addEventListener('click', () => {
-    state.viewMode = button.dataset.viewMode;
+    state.appView = button.dataset.appView;
     render();
   });
 });
